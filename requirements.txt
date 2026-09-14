@@ -1,0 +1,10 @@
+tensorflow==2.16.1
+streamlit==1.61.1
+opencv-python
+pandas
+numpy
+scikit-learn
+Pillow
+requests
+python-dotenv
+kagglehub
