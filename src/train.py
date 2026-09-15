@@ -14,12 +14,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Deteksi environment: Colab vs lokal ---
-IN_COLAB = "COLAB_GPU" in os.environ or "COLAB_RELEASE_TAG" in os.environ
+# Deteksi via keberadaan folder /content/drive (bukan drive.mount() -- itu
+# HARUS dipanggil di cell notebook terpisah, sebelum menjalankan script ini
+# lewat `!python -m src.train`. drive.mount() tidak bisa dipanggil dari
+# dalam proses subprocess seperti ini, akan error AttributeError terkait
+# IPython kernel yang tidak ditemukan.
+IN_COLAB = os.path.exists("/content/drive")
 BASE_DIR = "/content/drive/MyDrive/diabetic-retinopathy-v2" if IN_COLAB else "."
 
 if IN_COLAB:
-    from google.colab import drive
-    drive.mount("/content/drive")
+    if not os.path.isdir("/content/drive/MyDrive"):
+        raise RuntimeError(
+            "Folder /content/drive terdeteksi tapi Drive belum ter-mount "
+            "dengan benar (MyDrive tidak ditemukan). Jalankan di CELL "
+            "NOTEBOOK TERPISAH (bukan lewat !python) sebelum training:\n\n"
+            "    from google.colab import drive\n"
+            "    drive.mount('/content/drive')\n"
+        )
     logger.info(f"Jalan di Google Colab, BASE_DIR = {BASE_DIR}")
 else:
     logger.info("Jalan di lokal (bukan Colab).")
@@ -123,9 +134,9 @@ def evaluate_on_test(model, test_ds, test_df):
 
 
 def main():
-    images_dir = os.path.join(BASE_DIR, DATA_DIR, "train_images")
-
-    train_df, val_df, test_df, class_weights = prepare_data()
+    data_dir_hint = os.path.join(BASE_DIR, DATA_DIR)
+    train_df, val_df, test_df, class_weights, resolved_data_dir = prepare_data(data_dir=data_dir_hint)
+    images_dir = os.path.join(resolved_data_dir, "train_images")
 
     train_ds = make_dataset(train_df, images_dir, augment=True, shuffle=True)
     val_ds = make_dataset(val_df, images_dir, augment=False, shuffle=False)
