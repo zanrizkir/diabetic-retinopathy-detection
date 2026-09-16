@@ -6,6 +6,8 @@ import numpy as np
 import tensorflow as tf
 from sklearn.metrics import accuracy_score, cohen_kappa_score, confusion_matrix, classification_report
 
+from src.losses import CategoricalFocalLoss
+
 from src.config import IMG_SIZE, NUM_CLASSES, MODEL_PATH, METRICS_PATH
 from src.data_prep import prepare_data, DATA_DIR
 from src.preprocessing import prepare_image
@@ -13,12 +15,6 @@ from src.preprocessing import prepare_image
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Deteksi environment: Colab vs lokal ---
-# Deteksi via keberadaan folder /content/drive (bukan drive.mount() -- itu
-# HARUS dipanggil di cell notebook terpisah, sebelum menjalankan script ini
-# lewat `!python -m src.train`. drive.mount() tidak bisa dipanggil dari
-# dalam proses subprocess seperti ini, akan error AttributeError terkait
-# IPython kernel yang tidak ditemukan.
 IN_COLAB = os.path.exists("/content/drive")
 BASE_DIR = "/content/drive/MyDrive/diabetic-retinopathy-v2" if IN_COLAB else "."
 
@@ -38,10 +34,11 @@ else:
 
 # --- Hyperparameter ---
 WARMUP_EPOCHS = 5
-FINETUNE_EPOCHS = 15
+FINETUNE_EPOCHS = 20  # dinaikkan dari 15 -- beri lebih banyak ruang untuk kelas minoritas belajar
 FINETUNE_UNFREEZE_RATIO = 0.30  # unfreeze 30% layer teratas EfficientNet
 FINETUNE_LR = 1e-5
 BATCH_SIZE = 32
+FOCAL_LOSS_GAMMA = 2.0  # standar dari paper Focal Loss (Lin et al. 2017)
 
 
 def make_dataset(df, images_dir, augment: bool, shuffle: bool):
@@ -143,7 +140,7 @@ def main():
     test_ds = make_dataset(test_df, images_dir, augment=False, shuffle=False)
 
     model, base_model = build_model()
-    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
+    model.compile(optimizer="adam", loss=CategoricalFocalLoss(gamma=FOCAL_LOSS_GAMMA), metrics=["accuracy"])
 
     checkpoint_path = os.path.join(BASE_DIR, "models", "checkpoint.keras")
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -166,12 +163,12 @@ def main():
     unfreeze_top_layers(base_model, FINETUNE_UNFREEZE_RATIO)
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=FINETUNE_LR),
-        loss="categorical_crossentropy",
+        loss=CategoricalFocalLoss(gamma=FOCAL_LOSS_GAMMA),
         metrics=["accuracy"],
     )
 
     early_stop_cb = tf.keras.callbacks.EarlyStopping(
-        monitor="val_loss", patience=5, restore_best_weights=True
+        monitor="val_loss", patience=7, restore_best_weights=True
     )
     reduce_lr_cb = tf.keras.callbacks.ReduceLROnPlateau(
         monitor="val_loss", patience=3, factor=0.5
