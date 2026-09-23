@@ -34,19 +34,27 @@ else:
 
 # --- Hyperparameter ---
 WARMUP_EPOCHS = 5
-FINETUNE_EPOCHS = 20  # dinaikkan dari 15 -- beri lebih banyak ruang untuk kelas minoritas belajar
-FINETUNE_UNFREEZE_RATIO = 0.30  # unfreeze 30% layer teratas EfficientNet
+FINETUNE_EPOCHS = 20  
+FINETUNE_UNFREEZE_RATIO = 0.30  
 FINETUNE_LR = 1e-5
 BATCH_SIZE = 32
-FOCAL_LOSS_GAMMA = 2.0  # standar dari paper Focal Loss (Lin et al. 2017)
+FOCAL_LOSS_GAMMA = 2.0  
 
 
-def make_dataset(df, images_dir, augment: bool, shuffle: bool):
+def make_dataset(df, images_dir, augment: bool, shuffle: bool, cache_path: str = None):
     """
     Buat tf.data.Dataset dari dataframe (kolom id_code, diagnosis).
     Preprocessing (crop_retina + preprocess_input) dipanggil lewat
     prepare_image() dari src/preprocessing.py -- SATU sumber kebenaran
     yang sama dipakai training maupun inference di app.py.
+
+    cache_path: kalau diberikan, hasil crop_retina + preprocess_input
+    (bagian yang PALING BERAT -- Otsu threshold + deteksi kontur pada
+    gambar resolusi besar) akan di-cache ke disk setelah dihitung SEKALI
+    di epoch pertama. Epoch-epoch berikutnya tinggal baca dari cache,
+    bukan menghitung ulang dari nol -- ini memangkas waktu training
+    secara drastis untuk multi-epoch training (crop_retina tidak
+    berubah antar epoch, cuma augmentasi setelahnya yang random).
     """
 
     def _load_and_preprocess(id_code, label):
@@ -76,10 +84,15 @@ def make_dataset(df, images_dir, augment: bool, shuffle: bool):
 
     ds = ds.map(_load_and_preprocess, num_parallel_calls=tf.data.AUTOTUNE)
 
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        ds = ds.cache(cache_path)
+        logger.info(f"Dataset akan di-cache ke: {cache_path} (setelah epoch pertama, epoch berikutnya jauh lebih cepat)")
+
     if augment:
         augmenter = tf.keras.Sequential([
             tf.keras.layers.RandomFlip("horizontal_and_vertical"),
-            tf.keras.layers.RandomRotation(1.0),  # rotasi penuh 360 derajat -- retina tidak punya orientasi baku
+            tf.keras.layers.RandomRotation(1.0),
             tf.keras.layers.RandomZoom(0.2),
             tf.keras.layers.RandomBrightness(0.2),
         ])
@@ -93,7 +106,7 @@ def build_model():
     base_model = tf.keras.applications.EfficientNetB3(
         weights="imagenet", include_top=False, input_shape=(*IMG_SIZE, 3)
     )
-    base_model.trainable = False  # freeze dulu untuk tahap warm-up
+    base_model.trainable = False 
 
     x = base_model.output
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
@@ -135,9 +148,20 @@ def main():
     train_df, val_df, test_df, class_weights, resolved_data_dir = prepare_data(data_dir=data_dir_hint)
     images_dir = os.path.join(resolved_data_dir, "train_images")
 
-    train_ds = make_dataset(train_df, images_dir, augment=True, shuffle=True)
-    val_ds = make_dataset(val_df, images_dir, augment=False, shuffle=False)
-    test_ds = make_dataset(test_df, images_dir, augment=False, shuffle=False)
+    cache_dir = "/content/dr_cache" if IN_COLAB else "./cache"
+
+    train_ds = make_dataset(
+        train_df, images_dir, augment=True, shuffle=True,
+        cache_path=os.path.join(cache_dir, "train"),
+    )
+    val_ds = make_dataset(
+        val_df, images_dir, augment=False, shuffle=False,
+        cache_path=os.path.join(cache_dir, "val"),
+    )
+    test_ds = make_dataset(
+        test_df, images_dir, augment=False, shuffle=False,
+        cache_path=os.path.join(cache_dir, "test"),
+    )
 
     model, base_model = build_model()
     model.compile(optimizer="adam", loss=CategoricalFocalLoss(gamma=FOCAL_LOSS_GAMMA), metrics=["accuracy"])
